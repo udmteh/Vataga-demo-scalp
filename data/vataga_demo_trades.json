@@ -1,0 +1,10 @@
+{
+  "balance": 100.0,
+  "initial_balance": 100.0,
+  "positions": {
+    "binance": {},
+    "bybit": {}
+  },
+  "symbol_leverage": {},
+  "trades": []
+}
