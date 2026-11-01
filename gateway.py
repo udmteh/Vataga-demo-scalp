@@ -18,7 +18,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 # Ports
 PROXY_PORT = 8989
 MOCK_PORT = 8990
-INITIAL_BALANCE = 50.0 # $50.00 virtual deposit
+INITIAL_BALANCE = 1000.0 # $1000.00 virtual deposit
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -358,56 +358,85 @@ class VirtualWallet:
             self._http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.5))
         return self._http_session
 
-    async def get_market_quote(self, symbol):
+    async def get_market_quote(self, symbol, is_binance=True):
         clean_sym = symbol.replace("USDT", "") + "USDT"
         now = time.time()
-        cached = self.cached_quotes.get(clean_sym)
+        cache_key = f"{'binance' if is_binance else 'bybit'}_{clean_sym}"
+        cached = self.cached_quotes.get(cache_key)
         if cached and (now - cached["ts"] < 0.25):
             return cached
 
         session = await self.get_http_session()
 
-        # 1. Primary: Bybit Linear Tickers (fastest in RU, ~0.2s, never 451)
-        try:
-            url_bybit = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={clean_sym}"
-            async with session.get(url_bybit) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("retCode") == 0:
-                        items = data.get("result", {}).get("list", [])
-                        if items:
-                            it = items[0]
-                            last = float(it.get("lastPrice", 0.0))
-                            bid = float(it.get("bid1Price") or last)
-                            ask = float(it.get("ask1Price") or last)
-                            if bid > 0 and ask > 0:
-                                q = {"bid": bid, "ask": ask, "last": last, "ts": now}
-                                self.cached_quotes[clean_sym] = q
-                                return q
-        except Exception:
-            pass
+        if is_binance:
+            # 1. Primary for Binance: Binance Futures bookTicker via www.binance.com (never 451)
+            try:
+                url_bin = f"https://www.binance.com/fapi/v1/ticker/bookTicker?symbol={clean_sym}"
+                async with session.get(url_bin) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        bid = float(data.get("bidPrice", 0.0))
+                        ask = float(data.get("askPrice", 0.0))
+                        if bid > 0 and ask > 0:
+                            q = {"bid": bid, "ask": ask, "last": (bid + ask) / 2, "ts": now}
+                            self.cached_quotes[cache_key] = q
+                            return q
+            except Exception:
+                pass
 
-        # 2. Fallback: Binance Vision bookTicker
-        try:
-            url_vis = f"https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol={clean_sym}"
-            async with session.get(url_vis) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    bid = float(data.get("bidPrice", 0.0))
-                    ask = float(data.get("askPrice", 0.0))
-                    if bid > 0 and ask > 0:
-                        q = {"bid": bid, "ask": ask, "last": (bid + ask) / 2, "ts": now}
-                        self.cached_quotes[clean_sym] = q
-                        return q
-        except Exception:
-            pass
+            # 2. Fallback: Binance Vision Spot bookTicker
+            try:
+                url_vis = f"https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol={clean_sym}"
+                async with session.get(url_vis) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        bid = float(data.get("bidPrice", 0.0))
+                        ask = float(data.get("askPrice", 0.0))
+                        if bid > 0 and ask > 0:
+                            q = {"bid": bid, "ask": ask, "last": (bid + ask) / 2, "ts": now}
+                            self.cached_quotes[cache_key] = q
+                            return q
+            except Exception:
+                pass
+        else:
+            # Primary for Bybit: Bybit Linear Tickers
+            try:
+                url_bybit = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={clean_sym}"
+                async with session.get(url_bybit) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("retCode") == 0:
+                            items = data.get("result", {}).get("list", [])
+                            if items:
+                                it = items[0]
+                                last = float(it.get("lastPrice", 0.0))
+                                bid = float(it.get("bid1Price") or last)
+                                ask = float(it.get("ask1Price") or last)
+                                if bid > 0 and ask > 0:
+                                    q = {"bid": bid, "ask": ask, "last": last, "ts": now}
+                                    self.cached_quotes[cache_key] = q
+                                    return q
+            except Exception:
+                pass
 
         return cached
 
-    def get_market_price(self, symbol):
+    def get_market_price(self, symbol, is_binance=True):
         clean_sym = symbol.replace("USDT", "") + "USDT"
+        cache_key = f"{'binance' if is_binance else 'bybit'}_{clean_sym}"
+        if cache_key in self.cached_quotes:
+            return self.cached_quotes[cache_key]["last"]
         if clean_sym in self.cached_quotes:
             return self.cached_quotes[clean_sym]["last"]
+        if is_binance:
+            try:
+                url = f"https://www.binance.com/fapi/v1/ticker/price?symbol={clean_sym}"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                    data = json.loads(resp.read().decode())
+                    return float(data.get("price", 0.0))
+            except Exception:
+                pass
         try:
             url = f"https://data-api.binance.vision/api/v3/ticker/price?symbol={clean_sym}"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -435,7 +464,7 @@ class VirtualWallet:
             (o["qty"] * o["price"]) / self.symbol_leverage.get(o.get("symbol", symbol), self.default_leverage)
             for o in self.open_orders.values() if o.get("exchange") == target_exch
         )
-        order_price = price or self.get_market_price(symbol) or 0.0
+        order_price = price or self.get_market_price(symbol, is_binance=is_binance) or 0.0
         if order_price <= 0:
             cached = self.cached_quotes.get(symbol)
             order_price = cached["last"] if cached else 1.0
@@ -1048,7 +1077,7 @@ async def handle_order_execution(params, is_binance=False):
             return {"retCode": 140007, "retMsg": "insufficient available balance"}
 
     # 2. Check market quote and fill condition
-    quote = await wallet.get_market_quote(symbol)
+    quote = await wallet.get_market_quote(symbol, is_binance=is_binance)
 
     is_market = (order_type == "MARKET" or price is None)
     crosses_spread = False
@@ -2154,6 +2183,20 @@ async def get_fapi_exchange_info():
     global CACHED_FAPI_EXCHANGE_INFO
     if CACHED_FAPI_EXCHANGE_INFO:
         return CACHED_FAPI_EXCHANGE_INFO
+    # 1. Primary: Real Binance Futures exchange info via www.binance.com (never 451)
+    try:
+        url_bin = "https://www.binance.com/fapi/v1/exchangeInfo"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url_bin, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("symbols"):
+                        CACHED_FAPI_EXCHANGE_INFO = data
+                        print(f"[MARKET] Cached {len(data['symbols'])} real Binance Futures perpetual contracts", flush=True)
+                        return CACHED_FAPI_EXCHANGE_INFO
+    except Exception as e:
+        print(f"[EXCHANGE_INFO BINANCE ERROR] {e}", flush=True)
+    # 2. Fallback: Bybit linear instruments
     try:
         url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
         async with aiohttp.ClientSession() as session:
@@ -2254,7 +2297,17 @@ async def binance_spot_exchange_info(request):
 async def binance_depth(request):
     symbol = request.query.get("symbol", "BTCUSDT").upper()
     limit = request.query.get("limit", "100")
-    # 1. Try Binance Vision Spot depth
+    # 1. Primary: Binance Futures depth via www.binance.com
+    try:
+        url_bin = f"https://www.binance.com/fapi/v1/depth?symbol={symbol}&limit={limit}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url_bin, timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    return web.Response(body=data, status=200, content_type="application/json")
+    except Exception:
+        pass
+    # 2. Try Binance Vision Spot depth
     try:
         url = f"https://data-api.binance.vision/api/v3/depth?symbol={symbol}&limit={limit}"
         async with aiohttp.ClientSession() as session:
@@ -2368,6 +2421,17 @@ async def binance_klines(request):
 
 async def binance_ticker_price(request):
     symbol = request.query.get("symbol", "")
+    try:
+        url_bin = "https://www.binance.com/fapi/v1/ticker/price"
+        if symbol:
+            url_bin += f"?symbol={symbol}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url_bin, timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    return web.Response(body=data, status=200, content_type="application/json")
+    except Exception:
+        pass
     try:
         url = "https://data-api.binance.vision/api/v3/ticker/price"
         if symbol:
@@ -2702,14 +2766,15 @@ async def order_matching_loop():
                 await asyncio.sleep(0.12)
                 continue
 
-            orders_by_symbol = {}
             for oid, o in list(wallet.open_orders.items()):
+                if oid not in wallet.open_orders:
+                    continue
                 sym = o.get("symbol")
-                if sym:
-                    orders_by_symbol.setdefault(sym, []).append((oid, o))
+                if not sym:
+                    continue
 
-            for sym, orders in orders_by_symbol.items():
-                quote = await wallet.get_market_quote(sym)
+                is_bin = (o.get("exchange") == "binance")
+                quote = await wallet.get_market_quote(sym, is_binance=is_bin)
                 if not quote:
                     continue
                 best_bid = quote.get("bid", 0.0)
@@ -2718,42 +2783,43 @@ async def order_matching_loop():
                 if best_bid <= 0 or best_ask <= 0:
                     continue
 
-                for oid, o in orders:
-                    if oid not in wallet.open_orders:
-                        continue
+                side = o["side"].upper()
+                limit_price = float(o["price"])
+                qty = float(o["qty"])
 
-                    side = o["side"].upper()
-                    limit_price = float(o["price"])
-                    qty = float(o["qty"])
-                    should_fill = False
-                    exec_price = limit_price
+                # Sanity check: prevent filling if quote is from completely wrong coin / disconnected spread
+                ref_p = best_ask if side in ["BUY", "B"] else best_bid
+                if not (0.2 * limit_price <= ref_p <= 5.0 * limit_price):
+                    continue
 
-                    if side in ["BUY", "B"]:
-                        # Limit BUY executes when market ask drops to/below limit price, or last price drops to/below limit price
-                        if best_ask <= limit_price or (last_price > 0 and last_price <= limit_price):
-                            should_fill = True
-                            exec_price = min(limit_price, best_ask if best_ask > 0 else limit_price)
-                    else:
-                        # Limit SELL executes when market bid rises to/above limit price, or last price rises to/above limit price
-                        if best_bid >= limit_price or (last_price > 0 and last_price >= limit_price):
-                            should_fill = True
-                            exec_price = max(limit_price, best_bid if best_bid > 0 else limit_price)
+                should_fill = False
+                exec_price = limit_price
 
-                    if should_fill:
-                        del wallet.open_orders[oid]
-                        is_bin = (o.get("exchange") == "binance")
-                        exch_tag = "BINANCE" if is_bin else "BYBIT"
-                        print(f"🎯 [{exch_tag} LIMIT HIT & EXECUTED] {sym} | {side} {qty} @ {exec_price:.4f} (Limit: {limit_price:.4f}, Best Ask: {best_ask:.4f}, Best Bid: {best_bid:.4f})", flush=True)
-                        await wallet.execute_fill(
-                            symbol=sym,
-                            side=side,
-                            qty=qty,
-                            exec_price=exec_price,
-                            client_order_id=o.get("clientOrderId", f"ord_{oid}"),
-                            order_type="LIMIT",
-                            is_binance=is_bin,
-                            order_id_num=int(oid)
-                        )
+                if side in ["BUY", "B"]:
+                    # Limit BUY executes when market ask touches/drops below limit price
+                    if best_ask <= limit_price or (last_price > 0 and last_price <= limit_price):
+                        should_fill = True
+                        exec_price = limit_price
+                else:
+                    # Limit SELL executes when market bid touches/rises above limit price
+                    if best_bid >= limit_price or (last_price > 0 and last_price >= limit_price):
+                        should_fill = True
+                        exec_price = limit_price
+
+                if should_fill:
+                    del wallet.open_orders[oid]
+                    exch_tag = "BINANCE" if is_bin else "BYBIT"
+                    print(f"🎯 [{exch_tag} LIMIT HIT & EXECUTED] {sym} | {side} {qty} @ {exec_price:.4f} (Limit: {limit_price:.4f}, Best Ask: {best_ask:.4f}, Best Bid: {best_bid:.4f})", flush=True)
+                    await wallet.execute_fill(
+                        symbol=sym,
+                        side=side,
+                        qty=qty,
+                        exec_price=exec_price,
+                        client_order_id=o.get("clientOrderId", f"ord_{oid}"),
+                        order_type="LIMIT",
+                        is_binance=is_bin,
+                        order_id_num=int(oid)
+                    )
         except Exception as e:
             print(f"[MATCHING ENGINE ERROR] {e}", flush=True)
         await asyncio.sleep(0.12)

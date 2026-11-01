@@ -1,6 +1,6 @@
 {
-  "balance": 100.0,
-  "initial_balance": 100.0,
+  "balance": 1000.0,
+  "initial_balance": 1000.0,
   "positions": {
     "binance": {},
     "bybit": {}

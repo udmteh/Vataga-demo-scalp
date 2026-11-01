@@ -74,7 +74,7 @@ start_gateway.bat
   🚀 VATAGA PAPER GATEWAY by CGTehnik ACTIVE!
   • Proxy Port (Vataga connects here): 127.0.0.1:8989
   • Mock SSL Engine: 127.0.0.1:8990
-  • Virtual Balance: $100.00 USDT
+  • Virtual Balance: $1000.00 USDT
   • Supported Exchanges: Binance Futures & Bybit V5 Linear
 ===========================================================
 ```
