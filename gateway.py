@@ -178,7 +178,6 @@ class VirtualWallet:
             "id": f"wal_{now_ms}",
             "creationTime": now_ms,
             "data": [
-                make_entry("SPOT"),
                 make_entry("CONTRACT"),
                 make_entry("UNIFIED")
             ]
@@ -795,6 +794,21 @@ async def bybit_wallet_balance(request):
     req_type = request.query.get("accountType", "").upper()
 
     def make_entry(acc_type):
+        if acc_type == "SPOT":
+            return {
+                "totalEquity": "0",
+                "accountIMRate": "0",
+                "totalMarginBalance": "0",
+                "totalInitialMargin": "0",
+                "accountType": "SPOT",
+                "totalAvailableBalance": "0",
+                "accountMMRate": "0",
+                "totalPerpUPL": "0",
+                "totalWalletBalance": "0",
+                "accountLTV": "0",
+                "totalMaintenanceMargin": "0",
+                "coin": []
+            }
         return {
             "totalEquity": bal_str,
             "accountIMRate": "0",
