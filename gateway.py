@@ -178,6 +178,7 @@ class VirtualWallet:
             "id": f"wal_{now_ms}",
             "creationTime": now_ms,
             "data": [
+                make_entry("SPOT"),
                 make_entry("CONTRACT"),
                 make_entry("UNIFIED")
             ]
@@ -826,20 +827,12 @@ async def bybit_wallet_balance(request):
             }]
         }
 
-    if req_type == "SPOT":
-        return web.json_response({
-            "retCode": 0,
-            "retMsg": "OK",
-            "result": {
-                "list": []
-            },
-            "retExtInfo": {},
-            "time": now_ms
-        })
-
-    order = ["CONTRACT", "UNIFIED"]
+    order = ["SPOT", "CONTRACT", "UNIFIED"]
     if req_type and req_type in order:
-        order = [req_type]
+        order.remove(req_type)
+        order.insert(0, req_type)
+    elif req_type:
+        order.insert(0, req_type)
 
     return web.json_response({
         "retCode": 0,
